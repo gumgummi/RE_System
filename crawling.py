@@ -217,9 +217,15 @@ class KakaoMapCrawler(BaseMapCrawler):
     def _navigate_to_store(self, store_name):
         """책임 1: 카카오맵 검색 및 상세 페이지 진입 (미제공/0건 사전 필터링)"""
         self.driver.get("https://map.kakao.com")
-        time.sleep(2)
+        
+        try:
+            kakao_search_box = self.wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[id="search.keyword.query"]'))
+            )
+        except Exception as e:
+            print(f"[Kakao] 카카오맵 메인 페이지 로드 실패 또는 검색창 탐색 시간 초과: {e}")
+            return None
 
-        kakao_search_box = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[id="search.keyword.query"]')))
         kakao_search_box.clear()
         kakao_search_box.send_keys(store_name)
         kakao_search_box.send_keys(Keys.ENTER)
@@ -388,8 +394,8 @@ if __name__ == "__main__":
     store_list = load_store_list(input_txt_path)
     print(f"총 {len(store_list)}개의 식당 목록을 불러왔습니다: {store_list}")
 
-    naver_crawler = NaverMapCrawler(headless=True)
-    kakao_crawler = KakaoMapCrawler(headless=True)
+    naver_crawler = NaverMapCrawler(headless=False)
+    kakao_crawler = KakaoMapCrawler(headless=False)
     
     all_stores_reviews = []
 
