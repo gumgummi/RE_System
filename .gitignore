@@ -1,2 +1,8 @@
 # 파이썬 가상환경
 venv/
+
+# db
+reviews.db
+
+# 캐시
+__pycache__/
