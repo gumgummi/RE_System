@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ query }} - 리뷰 분석</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <div class="container py-4" style="max-width: 860px;">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <a href="/" class="btn btn-outline-secondary btn-sm">&larr; 검색 화면으로</a>
+      <span class="badge text-bg-info">{{ source_mode }}</span>
+    </div>
+
+    <h2 class="mb-3">{{ place['store_name'] }}</h2>
+
+    <!-- AI 종합 분석 카드 -->
+    <div class="card mb-4 shadow-sm">
+      <div class="card-header fw-bold">AI 종합 리뷰 분석</div>
+      <div class="card-body">
+        <p class="mb-2">{{ place['summary'] }}</p>
+        <small class="text-muted">수집 리뷰 수: {{ place['review_count'] }}개 | 평균 별점: {{ place['avg_rating'] }}</small>
+      </div>
+    </div>
+
+    <!-- 직접 리뷰 작성 폼 -->
+    <div class="card mb-4 shadow-sm">
+      <div class="card-header fw-bold">직접 리뷰 남기기</div>
+      <div class="card-body">
+        <form action="/review/{{ place['id'] }}" method="post">
+          <div class="row g-2 mb-2">
+            <div class="col-md-4">
+              <input type="text" name="nickname" class="form-control" placeholder="닉네임 (기본: 익명)">
+            </div>
+            <div class="col-md-4">
+              <select name="rating" class="form-select">
+                <option value="5">별점 5.0</option>
+                <option value="4">별점 4.0</option>
+                <option value="3">별점 3.0</option>
+                <option value="2">별점 2.0</option>
+                <option value="1">별점 1.0</option>
+              </select>
+            </div>
+          </div>
+          <div class="mb-2">
+            <textarea name="content" rows="2" class="form-control" placeholder="방문 후기를 남겨주세요" required></textarea>
+          </div>
+          <button type="submit" class="btn btn-success btn-sm">리뷰 등록</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 사용자 작성 리뷰 목록 -->
+    <h5 class="mb-2">직접 작성된 리뷰 ({{ user_reviews|length }}개)</h5>
+    <div class="list-group mb-4">
+      {% for ur in user_reviews %}
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between">
+            <strong>{{ ur['nickname'] }}</strong>
+            <small class="text-muted">★ {{ ur['rating'] }} · {{ ur['created_at'] }}</small>
+          </div>
+          <p class="mb-0 mt-1">{{ ur['content'] }}</p>
+        </div>
+      {% else %}
+        <div class="list-group-item text-muted">아직 직접 작성된 리뷰가 없습니다.</div>
+      {% endfor %}
+    </div>
+
+    <!-- 크롤링 리뷰 목록 -->
+    <h5 class="mb-2">네이버 / 카카오 크롤링 리뷰 ({{ crawled_reviews|length }}개)</h5>
+    <div class="list-group">
+      {% for cr in crawled_reviews %}
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between">
+            <span class="badge text-bg-dark">{{ cr['platform'] }}</span>
+            <small class="text-muted">평점: {{ cr['rating'] or '-' }} · {{ cr['review_date'] }}</small>
+          </div>
+          <p class="mb-0 mt-1">{{ cr['review'] }}</p>
+        </div>
+      {% else %}
+        <div class="list-group-item text-muted">수집된 크롤링 리뷰가 없습니다.</div>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>
