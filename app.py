@@ -3,11 +3,13 @@ import glob
 import sqlite3
 from datetime import datetime
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash
+from concurrent.futures import ThreadPoolExecutor
 
 from crawling import NaverMapCrawler, KakaoMapCrawler
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-in-prod")
 DB_PATH = "reviews.db"
 CSV_PATH = "all_stores_reviews.csv"
 
@@ -175,21 +177,130 @@ def init_db():
     seed_from_csv_if_empty()
 
 
-def crawl_store_live(store_name):
-    """DB에 없을 때만 실제 네이버/카카오 크롤링 수행"""
-    naver = NaverMapCrawler(headless=True)
-    kakao = KakaoMapCrawler(headless=True)
+def crawl_store_live(store_name, target_count=50):
+    """네이버와 카카오 크롤러를 병렬로 실행해 리뷰를 수집"""
+    naver = NaverMapCrawler(headless=True, target_count=target_count)
+    kakao = KakaoMapCrawler(headless=True, target_count=target_count)
+
+    def _run_naver():
+        try:
+            return naver.crawl(store_name)
+        except Exception as e:
+            print(f"[NAVER CRAWL ERROR] '{store_name}': {e}")
+            return []
+        finally:
+            naver.close()
+
+    def _run_kakao():
+        try:
+            return kakao.crawl(store_name)
+        except Exception as e:
+            print(f"[KAKAO CRAWL ERROR] '{store_name}': {e}")
+            return []
+        finally:
+            kakao.close()
+
     try:
-        naver_data = naver.crawl(store_name)
-        kakao_data = kakao.crawl(store_name)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_naver = executor.submit(_run_naver)
+            future_kakao = executor.submit(_run_kakao)
+            naver_data = future_naver.result()
+            kakao_data = future_kakao.result()
         return naver_data + kakao_data
     except Exception as e:
-        print(f"[CRAWL ERROR] '{store_name}' 크롤링 중 오류: {e}")
+        print(f"[CRAWL ERROR] '{store_name}' 병렬 크롤링 중 오류: {e}")
         return []
-    finally:
-        naver.close()
-        kakao.close()
 
+def append_new_crawled_reviews(cur, place_id, review_rows):
+    """기존 리뷰와 중복되지 않는 새 크롤링 리뷰만 추가하고 추가된 건수를 반환"""
+    cur.execute(
+        "SELECT platform, review, review_date FROM crawled_reviews WHERE place_id = ?",
+        (place_id,),
+    )
+    existing_keys = {
+        (
+            str(r["platform"] or "").strip(),
+            str(r["review"] or "").strip(),
+            str(r["review_date"] or "").strip(),
+        )
+        for r in cur.fetchall()
+    }
+
+    added_count = 0
+    for row in review_rows:
+        platform = str(row.get("Platform", "")).strip()
+        review_text = str(row.get("Review", "")).strip()
+        review_date = str(row.get("Date", "")).strip()
+        rating_raw = row.get("Rating", "")
+        rating_str = "" if pd.isna(rating_raw) else str(rating_raw).strip()
+
+        if not review_text:
+            continue
+
+        key = (platform, review_text, review_date)
+        if key in existing_keys:
+            continue
+
+        cur.execute(
+            """
+            INSERT INTO crawled_reviews (place_id, platform, review, rating, review_date)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (place_id, platform, review_text, rating_str, review_date),
+        )
+        existing_keys.add(key)
+        added_count += 1
+
+    return added_count
+
+def recalculate_place_stats(cur, place_id, store_name):
+    """crawled_reviews + user_reviews 기준으로 review_count, avg_rating, summary 갱신"""
+    cur.execute(
+        "SELECT platform, review, rating, review_date FROM crawled_reviews WHERE place_id = ?",
+        (place_id,),
+    )
+    crawled_rows = cur.fetchall()
+
+    cur.execute(
+        "SELECT rating FROM user_reviews WHERE place_id = ?",
+        (place_id,),
+    )
+    user_rows = cur.fetchall()
+
+    ratings = []
+    for r in crawled_rows:
+        val = r["rating"]
+        try:
+            if val is not None and str(val).strip() != "":
+                ratings.append(float(str(val).strip()))
+        except ValueError:
+            pass
+
+    for r in user_rows:
+        val = r["rating"]
+        try:
+            if val is not None:
+                ratings.append(float(val))
+        except (ValueError, TypeError):
+            pass
+
+    total_crawled = len(crawled_rows)
+    avg_rating_str = f"{sum(ratings) / len(ratings):.2f}" if ratings else "-"
+    summary_text = (
+        f"총 {total_crawled}개의 크롤링 리뷰와 {len(user_rows)}개의 직접 리뷰가 반영되었습니다 "
+        f"(평균 평점: {avg_rating_str}). "
+        "추후 학습된 AI 종합 요약/감성 분석 모델 결과가 이 영역에 표시됩니다."
+    )
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cur.execute(
+        """
+        UPDATE places
+        SET review_count = ?, avg_rating = ?, summary = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (total_crawled, avg_rating_str, summary_text, now, place_id),
+    )
 
 @app.route("/")
 def index():
@@ -240,6 +351,16 @@ def search():
     user_reviews = cur.fetchall()
     conn.close()
 
+    print("=== DEBUG CRAWLED_REVIEWS ===")
+    print("type:", type(crawled_reviews), "len:", len(crawled_reviews) if crawled_reviews is not None else None)
+    if crawled_reviews:
+        first = crawled_reviews[0]
+        print("first type:", type(first))
+        try:
+            print("first dict:", dict(first))
+        except Exception:
+            print("first dir/attrs:", getattr(first, "__dict__", first))
+
     return render_template(
         "result.html",
         query=query,
@@ -275,6 +396,7 @@ def add_review(place_id):
             """,
             (place_id, nickname, rating, content, now),
         )
+        recalculate_place_stats(cur, place_id, place["store_name"])
         conn.commit()
         store_name = place["store_name"]
         conn.close()
@@ -282,6 +404,35 @@ def add_review(place_id):
 
     conn.close()
     return redirect(url_for("index"))
+
+@app.route("/refresh/<int:place_id>", methods=["POST"])
+def refresh_reviews(place_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, store_name FROM places WHERE id = ?", (place_id,))
+    place = cur.fetchone()
+    conn.close()
+
+    if not place:
+        flash("해당 매장을 찾을 수 없습니다.", "warning")
+        return redirect(url_for("index"))
+
+    store_name = place["store_name"]
+    crawled_rows = crawl_store_live(store_name, target_count=10)
+
+    conn = get_db()
+    cur = conn.cursor()
+    added_count = append_new_crawled_reviews(cur, place_id, crawled_rows)
+    recalculate_place_stats(cur, place_id, store_name)
+    conn.commit()
+    conn.close()
+
+    if added_count > 0:
+        flash(f"새 리뷰 {added_count}건을 추가하고 최신 상태로 갱신했습니다.", "success")
+    else:
+        flash("새로 추가된 리뷰가 없습니다. 기존 리뷰와 업데이트 시각을 최신화했습니다.", "info")
+
+    return redirect(url_for("search", q=store_name))
 
 
 if __name__ == "__main__":
