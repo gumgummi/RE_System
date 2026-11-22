@@ -5,83 +5,390 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ query }} - 리뷰 분석</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg-page: #f4f6f9;
+      --card-border: #e5e8ef;
+      --accent: #3b5bfd;
+      --good: #1f9d55;
+      --warn: #d97706;
+    }
+    body {
+      background-color: var(--bg-page);
+      color: #161922;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    }
+    .dashboard-card {
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      box-shadow: 0 2px 10px rgba(16, 24, 40, 0.03);
+    }
+    .stat-tile {
+      background: #f8f9fc;
+      border: 1px solid #eceff5;
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .stat-value {
+      font-size: 1.45rem;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+    .gauge-ring {
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .gauge-inner {
+      width: 84px;
+      height: 84px;
+      border-radius: 50%;
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .metric-track {
+      height: 8px;
+      background: #edf0f5;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .metric-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.35s ease;
+    }
+    .review-item {
+      border-color: #eef1f6 !important;
+      padding: 16px 20px;
+    }
+  </style>
 </head>
-<body class="bg-light">
-  <div class="container py-4" style="max-width: 860px;">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <a href="/" class="btn btn-outline-secondary btn-sm">&larr; 검색 화면으로</a>
-      <span class="badge text-bg-info">{{ source_mode }}</span>
-    </div>
+<body>
+  <div class="container py-4" style="max-width: 960px;">
+    <!-- 상단 네비게이션 -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <a href="/" class="btn btn-outline-secondary btn-sm bg-white">&larr; 검색 화면으로</a>
 
-    <h2 class="mb-3">{{ place['store_name'] }}</h2>
-
-    <!-- AI 종합 분석 카드 -->
-    <div class="card mb-4 shadow-sm">
-      <div class="card-header fw-bold">AI 종합 리뷰 분석</div>
-      <div class="card-body">
-        <p class="mb-2">{{ place['summary'] }}</p>
-        <small class="text-muted">수집 리뷰 수: {{ place['review_count'] }}개 | 평균 별점: {{ place['avg_rating'] }}</small>
-      </div>
-    </div>
-
-    <!-- 직접 리뷰 작성 폼 -->
-    <div class="card mb-4 shadow-sm">
-      <div class="card-header fw-bold">직접 리뷰 남기기</div>
-      <div class="card-body">
-        <form action="/review/{{ place['id'] }}" method="post">
-          <div class="row g-2 mb-2">
-            <div class="col-md-4">
-              <input type="text" name="nickname" class="form-control" placeholder="닉네임 (기본: 익명)">
-            </div>
-            <div class="col-md-4">
-              <select name="rating" class="form-select">
-                <option value="5">별점 5.0</option>
-                <option value="4">별점 4.0</option>
-                <option value="3">별점 3.0</option>
-                <option value="2">별점 2.0</option>
-                <option value="1">별점 1.0</option>
-              </select>
-            </div>
-          </div>
-          <div class="mb-2">
-            <textarea name="content" rows="2" class="form-control" placeholder="방문 후기를 남겨주세요" required></textarea>
-          </div>
-          <button type="submit" class="btn btn-success btn-sm">리뷰 등록</button>
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge rounded-pill text-bg-primary px-3 py-2">{{ source_mode }}</span>
+        <form id="refreshForm" action="/refresh/{{ place['id'] }}" method="post" class="m-0">
+          <button id="refreshBtn" type="submit" class="btn btn-dark btn-sm px-3 py-2 fw-semibold">
+            <span id="refreshLabel">최신 리뷰 확인</span>
+            <span id="refreshSpinner" class="spinner-border spinner-border-sm ms-1 d-none" role="status"></span>
+          </button>
         </form>
       </div>
     </div>
 
-    <!-- 사용자 작성 리뷰 목록 -->
-    <h5 class="mb-2">직접 작성된 리뷰 ({{ user_reviews|length }}개)</h5>
-    <div class="list-group mb-4">
-      {% for ur in user_reviews %}
-        <div class="list-group-item">
-          <div class="d-flex justify-content-between">
-            <strong>{{ ur['nickname'] }}</strong>
-            <small class="text-muted">★ {{ ur['rating'] }} · {{ ur['created_at'] }}</small>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="alert alert-{{ category if category in ['success', 'info', 'warning', 'danger'] else 'info' }} alert-dismissible fade show py-2 px-3 small mb-3" role="alert">
+            {{ msg }}
+            <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert" aria-label="Close"></button>
           </div>
-          <p class="mb-0 mt-1">{{ ur['content'] }}</p>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <!-- 매장 헤더 & 요약 카드 -->
+    <div class="dashboard-card p-4 mb-4">
+      <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-4">
+        <div class="d-flex align-items-center gap-4">
+          <div id="scoreGauge" class="gauge-ring">
+            <div class="gauge-inner">
+              <span id="scoreNumber" class="fw-bolder fs-4 lh-1">-</span>
+              <small class="text-muted" style="font-size: 0.72rem;">평균 별점</small>
+            </div>
+          </div>
+          <div>
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <h2 class="fw-bold mb-0">{{ place['store_name'] }}</h2>
+              <span id="ratingBadge" class="badge rounded-pill text-bg-success">집계 완료</span>
+            </div>
+            <div class="text-muted small">검색어: "{{ query }}" · 업데이트: {{ place['updated_at'] or '-' }}</div>
+          </div>
         </div>
-      {% else %}
-        <div class="list-group-item text-muted">아직 직접 작성된 리뷰가 없습니다.</div>
-      {% endfor %}
+
+        <div class="row g-2 flex-shrink-0" style="min-width: 290px;">
+          <div class="col-6">
+            <div class="stat-tile">
+              <div class="text-muted small mb-1">수집 리뷰</div>
+              <div class="stat-value">{{ place['review_count'] }}<span class="fs-6 fw-normal text-muted">건</span></div>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="stat-tile">
+              <div class="text-muted small mb-1">사용자 후기</div>
+              <div class="stat-value text-primary">{{ user_reviews|length }}<span class="fs-6 fw-normal text-muted">건</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <hr class="my-4" style="border-color: #eef1f6;">
+
+      <div>
+        <div class="fw-bold mb-2">AI 종합 리뷰 분석</div>
+        <p class="mb-0 text-secondary" style="line-height: 1.65;">{{ place['summary'] or '요약 데이터가 없습니다.' }}</p>
+      </div>
+    </div>
+
+    <!-- 차트 영역 (2열) -->
+    <div class="row g-4 mb-4">
+      <div class="col-md-6">
+        <div class="dashboard-card p-4 h-100">
+          <h6 class="fw-bold mb-1">별점 분포</h6>
+          <p class="text-muted small mb-3">크롤링 리뷰와 직접 작성된 리뷰의 평점 건수입니다.</p>
+          <div style="height: 220px;">
+            <canvas id="ratingChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="dashboard-card p-4 h-100">
+          <h6 class="fw-bold mb-1">수집 채널 비율</h6>
+          <p class="text-muted small mb-3">플랫폼별 리뷰 수집 건수 비중입니다.</p>
+          <div id="platformBars" class="d-flex flex-column justify-content-center gap-3 mt-3"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 직접 리뷰 작성 폼 -->
+    <div class="dashboard-card p-4 mb-4">
+      <h6 class="fw-bold mb-3">직접 리뷰 남기기</h6>
+      <form action="/review/{{ place['id'] }}" method="post">
+        <div class="row g-2 mb-2">
+          <div class="col-md-4">
+            <input type="text" name="nickname" class="form-control" placeholder="닉네임 (기본: 익명)">
+          </div>
+          <div class="col-md-4">
+            <select name="rating" class="form-select">
+              <option value="5">별점 5.0</option>
+              <option value="4">별점 4.0</option>
+              <option value="3">별점 3.0</option>
+              <option value="2">별점 2.0</option>
+              <option value="1">별점 1.0</option>
+            </select>
+          </div>
+        </div>
+        <div class="mb-3">
+          <textarea name="content" rows="2" class="form-control" placeholder="방문 후기를 남겨주세요" required></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm px-3 py-2 fw-semibold">리뷰 등록</button>
+      </form>
+    </div>
+
+    <!-- 사용자 작성 리뷰 목록 -->
+    <div class="mb-4">
+      <h6 class="fw-bold mb-2">직접 작성된 리뷰 ({{ user_reviews|length }}개)</h6>
+      <div class="dashboard-card overflow-hidden">
+        <div class="list-group list-group-flush">
+          {% for ur in user_reviews %}
+            <div class="list-group-item review-item">
+              <div class="d-flex justify-content-between align-items-center">
+                <strong>{{ ur['nickname'] or '익명' }}</strong>
+                <small class="text-muted">★ {{ ur['rating'] }} · {{ ur['created_at'] }}</small>
+              </div>
+              <p class="mb-0 mt-2 text-secondary">{{ ur['content'] }}</p>
+            </div>
+          {% else %}
+            <div class="list-group-item review-item text-muted">아직 직접 작성된 리뷰가 없습니다.</div>
+          {% endfor %}
+        </div>
+      </div>
     </div>
 
     <!-- 크롤링 리뷰 목록 -->
-    <h5 class="mb-2">네이버 / 카카오 크롤링 리뷰 ({{ crawled_reviews|length }}개)</h5>
-    <div class="list-group">
-      {% for cr in crawled_reviews %}
-        <div class="list-group-item">
-          <div class="d-flex justify-content-between">
-            <span class="badge text-bg-dark">{{ cr['platform'] }}</span>
-            <small class="text-muted">평점: {{ cr['rating'] or '-' }} · {{ cr['review_date'] }}</small>
-          </div>
-          <p class="mb-0 mt-1">{{ cr['review'] }}</p>
+    <div>
+      <h6 class="fw-bold mb-2">크롤링 리뷰 ({{ crawled_reviews|length }}개)</h6>
+      <div class="dashboard-card overflow-hidden">
+        <div class="list-group list-group-flush">
+          {% for cr in crawled_reviews %}
+            <div class="list-group-item review-item">
+              <div class="d-flex justify-content-between align-items-center">
+                <span class="badge text-bg-dark">{{ cr['platform'] or '플랫폼' }}</span>
+                <small class="text-muted">평점: {{ cr['rating'] if cr['rating'] is not none else '-' }} · {{ cr['review_date'] or '-' }}</small>
+              </div>
+              <p class="mb-0 mt-2 text-secondary">{{ cr['review'] }}</p>
+            </div>
+          {% else %}
+            <div class="list-group-item review-item text-muted">수집된 크롤링 리뷰가 없습니다.</div>
+          {% endfor %}
         </div>
-      {% else %}
-        <div class="list-group-item text-muted">수집된 크롤링 리뷰가 없습니다.</div>
-      {% endfor %}
+      </div>
     </div>
   </div>
-</body>
-</html>
+
+  <script>
+    const avgRating = Number("{{ place['avg_rating'] or 0 }}");
+    const safeRating = Number.isFinite(avgRating) ? Math.max(0, Math.min(5, avgRating)) : 0;
+    const pct = (safeRating / 5) * 100;
+
+    const scoreNumberEl = document.getElementById('scoreNumber');
+    const scoreGaugeEl = document.getElementById('scoreGauge');
+    const badgeEl = document.getElementById('ratingBadge');
+
+    if (scoreNumberEl) {
+      scoreNumberEl.textContent = safeRating.toFixed(1);
+    }
+    if (scoreGaugeEl) {
+      const gaugeColor = safeRating >= 4.0 ? '#1f9d55' : (safeRating >= 3.0 ? '#d97706' : '#dc2626');
+      scoreGaugeEl.style.background =
+        `conic-gradient(${gaugeColor} ${pct * 3.6}deg, #e9edf4 0deg)`;
+    }
+    if (badgeEl) {
+      badgeEl.textContent = safeRating >= 4.0 ? '긍정 우세' : (safeRating >= 3.0 ? '보통' : '주의 필요');
+      badgeEl.className = 'badge rounded-pill ' + (safeRating >= 4.0 ? 'text-bg-success' : (safeRating >= 3.0 ? 'text-bg-warning' : 'text-bg-danger'));
+    }
+
+    const crawledData = [
+      {% for cr in crawled_reviews %}
+      {
+        platform: {{ (cr['platform'] or '기타') | tojson }},
+        rating: {{ (cr['rating'] if cr['rating'] is not none else '') | tojson }}
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    ];
+
+    // 1~5점 분포 집계 ('5', '4.5' 등 문자열/실수 모두 처리)
+    const userData = [
+      {% for ur in user_reviews %}
+      {
+        rating: {{ (ur['rating'] if ur['rating'] is not none else '') | tojson }}
+      }{% if not loop.last %},{% endif %}
+      {% endfor %}
+    ];
+
+    const crawledStarCounts = [0, 0, 0, 0, 0];
+    crawledData.forEach(item => {
+      const parsed = parseFloat(String(item.rating ?? '').trim());
+      const r = Number.isFinite(parsed) ? Math.round(parsed) : NaN;
+      if (r >= 1 && r <= 5) {
+        crawledStarCounts[r - 1] += 1;
+      }
+    });
+
+    const userStarCounts = [0, 0, 0, 0, 0];
+    userData.forEach(item => {
+      const parsed = parseFloat(String(item.rating ?? '').trim());
+      const r = Number.isFinite(parsed) ? Math.round(parsed) : NaN;
+      if (r >= 1 && r <= 5) {
+        userStarCounts[r - 1] += 1;
+      }
+    });
+
+    const totalStarCounts = crawledStarCounts.map((c, idx) => c + userStarCounts[idx]);
+    const maxStarCount = Math.max(...totalStarCounts, 0);
+    const yMax = maxStarCount === 0 ? 5 : Math.ceil(maxStarCount * 1.15);
+
+    const ratingCanvas = document.getElementById('ratingChart');
+    if (ratingCanvas && typeof Chart !== 'undefined') {
+      new Chart(ratingCanvas, {
+        type: 'bar',
+        data: {
+          labels: ['1점', '2점', '3점', '4점', '5점'],
+          datasets: [
+            {
+              label: '크롤링 리뷰',
+              data: crawledStarCounts,
+              backgroundColor: '#3b5bfd',
+              borderRadius: 4,
+              maxBarThickness: 36
+            },
+            {
+              label: '직접 작성 리뷰',
+              data: userStarCounts,
+              backgroundColor: '#10b981',
+              borderRadius: 4,
+              maxBarThickness: 36
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top',
+              labels: { boxWidth: 12, font: { size: 12 } }
+            },
+            tooltip: {
+              mode: 'index',
+              intersect: false
+            }
+          },
+          scales: {
+            x: {
+              stacked: true,
+              grid: { display: false }
+            },
+            y: {
+              stacked: true,
+              beginAtZero: true,
+              suggestedMax: yMax,
+              ticks: {
+                precision: 0,
+                callback: v => Number.isInteger(v) ? v + '건' : ''
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // 플랫폼별 리뷰 건수 집계
+    const platformMap = {};
+    crawledData.forEach(item => {
+      const pName = String(item.platform || '기타').trim() || '기타';
+      platformMap[pName] = (platformMap[pName] || 0) + 1;
+    });
+    const platformEntries = Object.entries(platformMap).sort((a, b) => b[1] - a[1]);
+    const platformContainer = document.getElementById('platformBars');
+
+    if (platformContainer) {
+      if (platformEntries.length === 0) {
+        platformContainer.innerHTML = '<div class="text-muted small">표시할 크롤링 플랫폼 데이터가 없습니다.</div>';
+      } else {
+        const maxCount = Math.max(...platformEntries.map(([, cnt]) => cnt), 1);
+        platformContainer.innerHTML = '';
+        platformEntries.forEach(([name, cnt]) => {
+          const widthPct = Math.round((cnt / maxCount) * 100);
+          const row = document.createElement('div');
+          row.innerHTML = `
+            <div class="d-flex justify-content-between small mb-1">
+              <span class="fw-semibold">${name}</span>
+              <span class="text-muted">${cnt}건</span>
+            </div>
+            <div class="metric-track">
+              <div class="metric-fill" style="width: ${widthPct}%; background: #3b5bfd;"></div>
+            </div>
+          `;
+          platformContainer.appendChild(row);
+        });
+      }
+    }
+
+    // 버튼 중복 클릭 방지
+    const refreshForm = document.getElementById('refreshForm');
+    if (refreshForm) {
+      refreshForm.addEventListener('submit', function () {
+        const label = document.getElementById('refreshLabel');
+        const spinner = document.getElementById('refreshSpinner');
+        const btn = document.getElementById('refreshBtn');
+        if (label) label.textContent = '리뷰 확인 중...';
+        if (spinner) spinner.classList.remove('d-none');
+        if (btn) btn.disabled = true;
+      });
+    }
+  </script>

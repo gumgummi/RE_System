@@ -14,13 +14,13 @@ from bs4 import BeautifulSoup
 
 class BaseMapCrawler:
     """공통 드라이버 설정 및 브라우저 관리 부모 클래스"""
-    def __init__(self, headless=False):
+    def __init__(self, headless=False, target_count=50):
         options = webdriver.ChromeOptions()
         if headless:
             options.add_argument('--headless')
         self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         self.wait = WebDriverWait(self.driver, 10)
-        self.target_count = 50
+        self.target_count = target_count
 
     def close(self):
         if self.driver:
@@ -28,8 +28,8 @@ class BaseMapCrawler:
 
 
 class NaverMapCrawler(BaseMapCrawler):
-    def __init__(self, headless=False):
-        super().__init__(headless)
+    def __init__(self, headless=False, target_count=50):
+        super().__init__(headless, target_count=target_count)
 
     def _format_date(self, raw_date):
         match = re.search(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', raw_date)
@@ -85,7 +85,7 @@ class NaverMapCrawler(BaseMapCrawler):
             WebDriverWait(self.driver, 4).until(
                 EC.frame_to_be_available_and_switch_to_it((By.ID, "entryIframe"))
             )
-            time.sleep(2)
+            time.sleep(1)
             return True
         except Exception as e:
             print(f"[Naver] '{store_name}' 상세 페이지(entryIframe) 진입 실패: {e}")
@@ -99,7 +99,7 @@ class NaverMapCrawler(BaseMapCrawler):
                 EC.element_to_be_clickable((By.XPATH, "//a[contains(., '리뷰')]"))
             )
             review_tab.click()
-            time.sleep(2)
+            time.sleep(1)
         except:
             return False
 
@@ -108,7 +108,7 @@ class NaverMapCrawler(BaseMapCrawler):
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "a.place_button_option[data-nlog-area*='sortrecent']"))
             )
             recent_sort_btn.click()
-            time.sleep(2)
+            time.sleep(1)
         except Exception as e:
             print(f"[Naver] 최신순 정렬 클릭 예외 (기본 정렬 유지): {e}")
         return True
@@ -211,8 +211,8 @@ class NaverMapCrawler(BaseMapCrawler):
 
 
 class KakaoMapCrawler(BaseMapCrawler):
-    def __init__(self, headless=False):
-        super().__init__(headless)
+    def __init__(self, headless=False, target_count=50):
+        super().__init__(headless, target_count=target_count)
 
     def _navigate_to_store(self, store_name):
         """책임 1: 카카오맵 검색 및 상세 페이지 진입 (미제공/0건 사전 필터링)"""
@@ -256,7 +256,7 @@ class KakaoMapCrawler(BaseMapCrawler):
         detail_url = moreview_link.get_attribute("href")
         
         self.driver.get(detail_url)
-        time.sleep(3)
+        time.sleep(1.5)
         return True
 
     def _setup_review_tab_and_sort(self):
@@ -266,7 +266,7 @@ class KakaoMapCrawler(BaseMapCrawler):
                 EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), '후기') or contains(text(), '방문리뷰')]"))
             )
             review_tab_k.click()
-            time.sleep(2)
+            time.sleep(1)
         except:
             pass
 
@@ -277,7 +277,7 @@ class KakaoMapCrawler(BaseMapCrawler):
 
             latest_option = self.wait.until(EC.element_to_be_clickable((By.XPATH, "//ul[@class='list_sort']//a[contains(text(), '최신 순')]")))
             latest_option.click()
-            time.sleep(2)
+            time.sleep(1)
         except Exception as e:
             print(f"[Kakao] 최신 순 정렬 설정 예외: {e}")
 
@@ -414,7 +414,7 @@ if __name__ == "__main__":
             else:
                 all_stores_reviews.extend(combined)
                 
-            time.sleep(2)
+            time.sleep(1)
 
         if not save_individually and all_stores_reviews:
             df_all = pd.DataFrame(all_stores_reviews)
