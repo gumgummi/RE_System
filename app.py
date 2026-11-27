@@ -2,10 +2,12 @@ import os
 import glob
 import sqlite3
 from datetime import datetime
+from contextlib import closing
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, abort, session
 from concurrent.futures import ThreadPoolExecutor
 
+from place_search import find_candidates, PlaceSearchError
 from crawling import NaverMapCrawler, KakaoMapCrawler
 
 app = Flask(__name__)
@@ -172,44 +174,37 @@ def init_db():
         )
         """
     )
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS map_places (
+            kakao_id TEXT PRIMARY KEY,
+            place_id INTEGER NOT NULL UNIQUE REFERENCES places(id),
+            name TEXT NOT NULL, address TEXT NOT NULL, lot TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
     seed_from_csv_if_empty()
 
 
-def crawl_store_live(store_name, target_count=50):
-    """네이버와 카카오 크롤러를 병렬로 실행해 리뷰를 수집"""
-    naver = NaverMapCrawler(headless=True, target_count=target_count)
-    kakao = KakaoMapCrawler(headless=True, target_count=target_count)
-
-    def _run_naver():
+def crawl_store_live(candidate, target_count=50):
+    def read_platform(crawler_type, **identity):
+        crawler = None
         try:
-            return naver.crawl(store_name)
-        except Exception as e:
-            print(f"[NAVER CRAWL ERROR] '{store_name}': {e}")
+            crawler = crawler_type(headless=True, target_count=target_count)
+            return crawler.crawl(candidate["name"], **identity)
+        except Exception as exc:
+            app.logger.warning("%s 수집 실패: %s", crawler_type.__name__, exc)
             return []
         finally:
-            naver.close()
+            if crawler:
+                crawler.close()
 
-    def _run_kakao():
-        try:
-            return kakao.crawl(store_name)
-        except Exception as e:
-            print(f"[KAKAO CRAWL ERROR] '{store_name}': {e}")
-            return []
-        finally:
-            kakao.close()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        naver = executor.submit(read_platform, NaverMapCrawler,
+                                addresses=(candidate["address"], candidate["lot"]))
+        kakao = executor.submit(read_platform, KakaoMapCrawler, kakao_id=candidate["id"])
+        return naver.result() + kakao.result()
 
-    try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_naver = executor.submit(_run_naver)
-            future_kakao = executor.submit(_run_kakao)
-            naver_data = future_naver.result()
-            kakao_data = future_kakao.result()
-        return naver_data + kakao_data
-    except Exception as e:
-        print(f"[CRAWL ERROR] '{store_name}' 병렬 크롤링 중 오류: {e}")
-        return []
 
 def append_new_crawled_reviews(cur, place_id, review_rows):
     """기존 리뷰와 중복되지 않는 새 크롤링 리뷰만 추가하고 추가된 건수를 반환"""
@@ -308,9 +303,10 @@ def index():
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT store_name, avg_rating, review_count, updated_at
-        FROM places
-        ORDER BY updated_at DESC, id DESC
+        SELECT p.id, COALESCE(m.name, p.store_name) AS store_name, p.avg_rating,
+               p.review_count, p.updated_at
+        FROM places p LEFT JOIN map_places m ON m.place_id = p.id
+        ORDER BY p.updated_at DESC, p.id DESC
         LIMIT 15
         """
     )
@@ -325,19 +321,82 @@ def search():
     if not query:
         return redirect(url_for("index"))
 
+    if len(query) > 200:
+        return render_template("choose.html", query=query, candidates=[], error="검색어는 200자 이내로 입력해 주세요."), 400
+    saved = session.get("chosen_places", {}).get(query)
+    if saved and not request.args.get("choose"):
+        with closing(get_db()) as conn:
+            row = conn.execute("SELECT place_id FROM map_places WHERE kakao_id = ?", (saved,)).fetchone()
+        if row:
+            return redirect(url_for("result", place_id=row["place_id"], q=query))
+    try:
+        candidates = find_candidates(query)
+    except PlaceSearchError as exc:
+        return render_template("choose.html", query=query, candidates=[], error=str(exc)), 503
+    return render_template("choose.html", query=query, candidates=candidates)
+
+
+@app.post("/select-place")
+def select_place():
+    query = request.form.get("q", "").strip()
+    kid = request.form.get("kakao_id", "")
+    if not query or len(query) > 200 or not kid.isascii() or not kid.isdigit():
+        abort(400)
+    # 제출한 이름·주소를 신뢰하지 않고 지도 검색 결과에서 선택 ID를 다시 찾는다.
+    try:
+        candidates = find_candidates(query)
+    except PlaceSearchError as exc:
+        return render_template("choose.html", query=query, candidates=[], error=str(exc)), 503
+    candidate = next((c for c in candidates if c["id"] == kid), None)
+    if candidate is None:
+        return render_template("choose.html", query=query, candidates=candidates,
+                               error="검색 결과가 바뀌었습니다. 지점을 다시 선택해 주세요."), 409
+
+    with closing(get_db()) as conn:
+        match = conn.execute("SELECT place_id FROM map_places WHERE kakao_id = ?", (kid,)).fetchone()
+    if match:
+        place_id = match["place_id"]
+    else:
+        reviews = crawl_store_live(candidate)
+        with closing(get_db()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            # 기존 검색어 캐시와 서로 다른 동명 매장의 리뷰가 섞이지 않게 한다.
+            match = conn.execute("SELECT place_id FROM map_places WHERE kakao_id = ?", (kid,)).fetchone()
+            if match:
+                place_id = match["place_id"]
+            else:
+                # places.store_name은 기존 스키마의 UNIQUE 키다. 표시 이름은 map_places에 보관한다.
+                place_id = conn.execute(
+                    "INSERT INTO places (store_name) VALUES ('kakao:' || ? || ':' || hex(randomblob(16)))",
+                    (kid,),
+                ).lastrowid
+                conn.execute("""INSERT INTO map_places (kakao_id, place_id, name, address, lot)
+                                VALUES (?, ?, ?, ?, ?)""",
+                             (kid, place_id, candidate["name"], candidate["address"], candidate["lot"]))
+            append_new_crawled_reviews(conn.cursor(), place_id, reviews)
+            recalculate_place_stats(conn.cursor(), place_id, candidate["name"])
+        if not reviews:
+            flash("선택한 매장의 리뷰를 가져오지 못했습니다. 최신 리뷰 확인으로 다시 시도해 주세요.", "warning")
+
+    choices = dict(session.get("chosen_places", {}))
+    choices[query] = kid
+    session["chosen_places"] = dict(list(choices.items())[-5:])
+    return redirect(url_for("result", place_id=place_id, q=query), code=303)
+
+
+@app.get("/places/<int:place_id>")
+def result(place_id):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM places WHERE store_name = ?", (query,))
-    place = cur.fetchone()
-
-    source_mode = "DB 캐시 조회"
+    place = cur.execute("""
+        SELECT p.*, COALESCE(m.name, p.store_name) AS display_name, m.address, m.kakao_id
+        FROM places p LEFT JOIN map_places m ON m.place_id = p.id WHERE p.id = ?
+    """, (place_id,)).fetchone()
     if not place:
-        source_mode = "실시간 크롤링 후 DB 저장"
-        crawled_rows = crawl_store_live(query)
-        save_place_and_reviews(query, crawled_rows)
-        cur.execute("SELECT * FROM places WHERE store_name = ?", (query,))
-        place = cur.fetchone()
-
+        conn.close()
+        abort(404)
+    query = request.args.get("q") or place["display_name"]
+    source_mode = "DB 캐시 조회" if place["kakao_id"] else "지점 확인 전 기록"
     cur.execute(
         "SELECT * FROM crawled_reviews WHERE place_id = ? ORDER BY id ASC",
         (place["id"],),
@@ -350,16 +409,6 @@ def search():
     )
     user_reviews = cur.fetchall()
     conn.close()
-
-    print("=== DEBUG CRAWLED_REVIEWS ===")
-    print("type:", type(crawled_reviews), "len:", len(crawled_reviews) if crawled_reviews is not None else None)
-    if crawled_reviews:
-        first = crawled_reviews[0]
-        print("first type:", type(first))
-        try:
-            print("first dict:", dict(first))
-        except Exception:
-            print("first dir/attrs:", getattr(first, "__dict__", first))
 
     return render_template(
         "result.html",
@@ -398,9 +447,8 @@ def add_review(place_id):
         )
         recalculate_place_stats(cur, place_id, place["store_name"])
         conn.commit()
-        store_name = place["store_name"]
         conn.close()
-        return redirect(url_for("search", q=store_name))
+        return redirect(url_for("result", place_id=place_id))
 
     conn.close()
     return redirect(url_for("index"))
@@ -409,7 +457,8 @@ def add_review(place_id):
 def refresh_reviews(place_id):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, store_name FROM places WHERE id = ?", (place_id,))
+    cur.execute("""SELECT p.store_name, m.kakao_id AS id, m.name, m.address, m.lot
+                   FROM places p LEFT JOIN map_places m ON m.place_id = p.id WHERE p.id = ?""", (place_id,))
     place = cur.fetchone()
     conn.close()
 
@@ -417,11 +466,14 @@ def refresh_reviews(place_id):
         flash("해당 매장을 찾을 수 없습니다.", "warning")
         return redirect(url_for("index"))
 
-    store_name = place["store_name"]
-    crawled_rows = crawl_store_live(store_name, target_count=10)
+    if not place["id"]:
+        return redirect(url_for("search", q=place["store_name"], choose=1))
+    store_name = place["name"]
+    crawled_rows = crawl_store_live(dict(place), target_count=10)
 
     conn = get_db()
     cur = conn.cursor()
+    cur.execute("BEGIN IMMEDIATE")
     added_count = append_new_crawled_reviews(cur, place_id, crawled_rows)
     recalculate_place_stats(cur, place_id, store_name)
     conn.commit()
@@ -432,7 +484,7 @@ def refresh_reviews(place_id):
     else:
         flash("새로 추가된 리뷰가 없습니다. 기존 리뷰와 업데이트 시각을 최신화했습니다.", "info")
 
-    return redirect(url_for("search", q=store_name))
+    return redirect(url_for("result", place_id=place_id))
 
 
 if __name__ == "__main__":

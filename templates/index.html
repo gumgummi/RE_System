@@ -96,10 +96,10 @@
 
       <h1 class="hero-title mb-3">
         이 가게 후기, 진짜일까?<br>
-        매장명이나 주소를 넣으면 분석해드려요
+        리뷰를 확인할 매장을 찾아보세요
       </h1>
       <p class="hero-desc mb-4">
-        DB에 저장된 리뷰를 우선 조회하고, 없으면 네이버·카카오맵 리뷰를 수집해 신뢰도와 핵심 요약을 보여줍니다.
+        상호와 주소를 확인하고 지점을 선택하면 리뷰를 볼 수 있습니다.
       </p>
 
       <form id="searchForm" action="/search" method="get" class="search-box-wrap d-flex align-items-center mb-3">
@@ -108,11 +108,11 @@
           type="text"
           name="q"
           class="form-control flex-grow-1"
-          placeholder="예: 오쭈꾸미 홍대본점 또는 매장 URL"
+          placeholder="예: 빽다방 보정점"
           required
         >
         <button id="submitBtn" type="submit" class="btn btn-primary btn-analyze">
-          <span id="btnLabel">신뢰도 분석</span>
+          <span id="btnLabel">매장 검색</span>
           <span id="btnSpinner" class="spinner-border spinner-border-sm ms-1 d-none" role="status"></span>
         </button>
       </form>
@@ -121,7 +121,7 @@
         <small class="text-secondary me-1">예시로 눌러보기</small>
         <button type="button" class="sample-chip" onclick="fillSample('오쭈꾸미 홍대본점')">오쭈꾸미 홍대본점</button>
         {% if recent_places %}
-          <button type="button" class="sample-chip" onclick="fillSample('{{ recent_places[0]['store_name'] }}')">
+          <button type="button" class="sample-chip" data-name="{{ recent_places[0]['store_name'] }}" onclick="fillSample(this.dataset.name)">
             최근 매장: {{ recent_places[0]['store_name'] }}
           </button>
         {% endif %}
@@ -138,7 +138,7 @@
     <div class="clean-card overflow-hidden">
       <div class="list-group list-group-flush">
         {% for p in recent_places %}
-          <a href="/search?q={{ p['store_name'] }}" class="list-group-item list-group-item-action py-3 px-4 d-flex justify-content-between align-items-center">
+          <a href="{{ url_for('result', place_id=p['id']) }}" class="list-group-item list-group-item-action py-3 px-4 d-flex justify-content-between align-items-center">
             <div>
               <div class="fw-semibold">{{ p['store_name'] }}</div>
               <small class="text-muted">리뷰 {{ p['review_count'] }}개 · 평균 ★ {{ p['avg_rating'] }}</small>
@@ -159,7 +159,7 @@
       input.focus();
     }
     document.getElementById('searchForm').addEventListener('submit', function () {
-      document.getElementById('btnLabel').textContent = '분석 중...';
+      document.getElementById('btnLabel').textContent = '검색 중...';
       document.getElementById('btnSpinner').classList.remove('d-none');
       document.getElementById('submitBtn').disabled = true;
     });
