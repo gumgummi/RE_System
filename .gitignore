@@ -6,3 +6,6 @@ reviews.db
 
 # 캐시
 __pycache__/
+
+# API 키
+.env

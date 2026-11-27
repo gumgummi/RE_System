@@ -82,7 +82,7 @@ class NaverMapCrawler(BaseMapCrawler):
 
         # 공통: 최종적으로 상세 페이지 영역인 entryIframe으로 진입
         try:
-            WebDriverWait(self.driver, 4).until(
+            WebDriverWait(self.driver, 10).until(
                 EC.frame_to_be_available_and_switch_to_it((By.ID, "entryIframe"))
             )
             time.sleep(1)
@@ -194,10 +194,36 @@ class NaverMapCrawler(BaseMapCrawler):
             
         return reviews
 
-    def crawl(self, store_name):
+    def _matches_place(self, name, addresses):
+        def normalize_address(address):
+            aliases = {"서울특별시": "서울", "경기도": "경기", "부산광역시": "부산",
+                       "인천광역시": "인천", "대구광역시": "대구", "대전광역시": "대전",
+                       "광주광역시": "광주", "울산광역시": "울산", "세종특별자치시": "세종"}
+            words = address.split()
+            if words:
+                words[0] = aliases.get(words[0], words[0])
+            return " ".join(words)
+
+        titles = self.driver.find_elements(By.CSS_SELECTOR, "#_title .GHAhO, #_title h1, #_title h2")
+        if not any("".join(t.text.split()) == "".join(name.split()) for t in titles):
+            return False
+        expected = {normalize_address(addr) for addr in addresses if addr}
+        nodes = self.driver.find_elements(By.CSS_SELECTOR, "span.LDgIH")
+        for node in nodes:
+            actual = normalize_address(node.text)
+            if any(actual == addr or actual.startswith(addr + " ") for addr in expected):
+                return True
+        return False
+
+    def crawl(self, store_name, addresses=()):
         print(f"\n=== [Naver] 크롤링 시작: {store_name} ===")
-        if not self._navigate_to_store(store_name):
+        search_text = f"{store_name} {addresses[0]}" if addresses else store_name
+        if not self._navigate_to_store(search_text):
             print(f"[Naver] '{store_name}' 검색 결과를 찾을 수 없거나 진입에 실패했습니다.")
+            return []
+
+        if addresses and not self._matches_place(store_name, addresses):
+            print(f"[Naver] '{store_name}' 이름과 주소를 확인할 수 없어 건너뜁니다.")
             return []
 
         if not self._setup_review_tab_and_sort():
@@ -362,9 +388,13 @@ class KakaoMapCrawler(BaseMapCrawler):
             
         return reviews
 
-    def crawl(self, store_name):
+    def crawl(self, store_name, kakao_id=None):
         print(f"\n=== [Kakao] 크롤링 시작: {store_name} ===")
-        nav_result = self._navigate_to_store(store_name)
+        if kakao_id:
+            self.driver.get(f"https://place.map.kakao.com/{kakao_id}")
+            nav_result = True
+        else:
+            nav_result = self._navigate_to_store(store_name)
         if nav_result is None:
             print(f"[Kakao] '{store_name}' 검색 결과를 찾을 수 없습니다.")
             return []
